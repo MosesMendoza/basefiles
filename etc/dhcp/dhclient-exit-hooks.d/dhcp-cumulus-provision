@@ -1,0 +1,11 @@
+#!/bin/bash
+#--------------------------------------------------------------------------
+#
+# Copyright 2013 Cumulus Networks, inc  all rights reserved
+#
+#--------------------------------------------------------------------------
+
+if [ ! -z $new_cumulus_provision_url ]
+then
+	/usr/lib/cumulus/autoprovision --log syslog  --url $new_cumulus_provision_url &
+fi

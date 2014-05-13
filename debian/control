@@ -1,0 +1,13 @@
+Source: cl-basefiles
+Section: net
+Priority: required
+Maintainer: support@cumulusnetworks.com
+Build-Depends: debhelper (>= 8.0.0)
+Standards-Version: 3.9.3
+Homepage:
+
+Package: cl-basefiles
+Architecture: all
+Depends:
+Description: Base files for CumulusLinux Distribution
+

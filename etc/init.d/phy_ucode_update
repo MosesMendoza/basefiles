@@ -1,0 +1,42 @@
+#! /bin/sh
+### BEGIN INIT INFO
+# Provides:          phy_ucode_update
+# Required-Start:    $all
+# Required-Stop:
+# X-Start-Before:
+# Default-Start:     S
+# Default-Stop:
+# Short-Description: PHY micro-code update
+# Description:       Cumulus Networks PHY micro-code update
+### END INIT INFO
+
+# Author: Curt Brune <curt@cumulusnetworks.com>
+#
+# Please remove the "Author" lines above and replace them
+# with your own name if you copy and modify this script.
+
+# PATH should only include /usr/* if it runs after the mountnfs.sh script
+PATH=/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin:/usr/cumulus/bin
+DESC="Cumulus Networks PHY micro-code update"
+NAME=phy_ucode_update
+SCRIPTNAME=/etc/init.d/$NAME
+PHY_UPDATE_ENABLE=yes
+
+# Read configuration variable file if it is present
+[ -r /etc/default/$NAME ] && . /etc/default/$NAME
+if [ "$PHY_UPDATE_ENABLE" != "yes" ] ; then
+    exit 0
+fi
+
+case "$1" in
+  start)
+        echo "$DESC"
+        /usr/lib/cumulus/phy-update $PHY_UPDATE_ARGS
+	;;
+  *)
+	echo "Usage: $SCRIPTNAME start" >&2
+	exit 3
+	;;
+esac
+
+:

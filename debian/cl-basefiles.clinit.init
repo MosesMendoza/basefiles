@@ -1,0 +1,31 @@
+#! /bin/bash
+### BEGIN INIT INFO
+# Provides:          clinit
+# Required-Start:    $remote_fs $syslog
+# Required-Stop:     $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:
+# X-Start-Before:    sshd
+# Short-Description: Cumulus miscellaneous initialization.
+# Description:       Start, stop or reconfigure anything.
+### END INIT INFO
+
+do_start()
+{
+        ### Generate host local ssh-host keys if don't exist
+        if [ ! -f /etc/ssh/ssh_host_dsa_key ] && [ ! -f /etc/ssh/ssh_host_rsa_key ] && [ ! -f /etc/ssh/ssh_host_ecdsa_key ];
+                then dpkg-reconfigure --frontend noninteractive openssh-server;
+        fi
+        return $?
+        ####################################################
+}
+
+case "$1" in
+   start|"")
+        do_start
+        ret=$?
+        exit $ret
+        ;;
+esac
+
+exit 0

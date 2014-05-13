@@ -1,0 +1,76 @@
+#!/usr/bin/python
+
+try:
+	import sys
+	import subprocess
+except ImportError, e:
+	raise ImportError (str(e) + "- required module not found")
+
+def get_mac(ifname):
+	mac = ""
+
+	try:
+		#XXX: Maybe use subprocess.check_output which is a lighter version
+		#(comes in python version 2.7)
+
+        	p = subprocess.Popen(["/sbin/ip", "--oneline", "link", "show", ifname],
+			stdout=subprocess.PIPE, shell=False, stderr=subprocess.STDOUT)
+        	ipcmdout = p.communicate()[0]
+        	p.wait()
+        	retval = p.returncode
+	except EnvironmentError as e:
+		retval = e.errno
+
+	if retval == 0:
+		ipcmdout_fields = ipcmdout.split();
+		l_index = ipcmdout_fields.index('link/ether')
+		mac = ipcmdout_fields[l_index+1]
+
+	return (retval, mac)
+
+
+def increment_mac(mac):
+	mac_octets = []
+	mac_octets = mac.split(':')
+	ret_mac = int(mac_octets[5], 16) | int(mac_octets[4], 16) << 8 | int(mac_octets[3], 16) << 16
+	ret_mac = ret_mac + 1
+
+	if (ret_mac & 0xff000000):
+		print 'Error: increment carries into OUI'
+		return ''
+
+	mac_octets[5] = hex(ret_mac & 0xff)[2:].zfill(2)
+	mac_octets[4] = hex((ret_mac >> 8) & 0xff)[2:].zfill(2)
+	mac_octets[3] = hex((ret_mac >> 16) & 0xff)[2:].zfill(2)
+
+	return ':'.join(mac_octets)
+	
+def usage(prg):
+	print 'usage: ', prg + ' [-a]'
+	print '        -a: MAC address string for switch configuration'
+	sys.exit(1)
+
+
+
+if (len(sys.argv) <= 1):
+	print "... not yet implemented for this platform"
+	sys.exit(1)
+
+if sys.argv[1] == '-a':
+	ifname = "eth0"
+	#
+	# Get mac base from ifname mac
+	# ie. eth0-mac + 1
+	mac_base = ""
+	(ret, mac) = get_mac(ifname)
+	if ret == 0 and mac != "":
+		mac_base = increment_mac(mac)
+	else:
+		print "Error: getting mac for ", ifname
+		sys.exit(1)
+
+	print mac_base
+else:
+	usage(sys.argv[0])
+
+sys.exit(0)

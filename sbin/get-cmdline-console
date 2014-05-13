@@ -1,0 +1,53 @@
+#! /bin/bash
+#-------------------------------------------------------------------------------
+#
+# Copyright 2012 Cumulus Networks, inc.  all rights reserved
+#
+# extracts the serial devie and baud rate of the linux command line console
+# for use in starting other serial port services such as getty.  Make sure that
+# we always return something useful.
+#
+
+# defaults
+#
+TTY="ttyS0"
+if [ $1 ] && [ -n $1 ]; then
+    TTY="$1"
+fi
+
+BAUD="9600"
+if [ $2 ] && [ -n $2 ]; then
+    BAUD="$2"
+fi
+
+# extract info from the command line (console overrides)
+#
+for I in `cat /proc/cmdline`
+do
+    case $I in
+	console=*)
+	    I=${I/#console=}
+	    CONS=(${I/,/ })
+	    break
+	    ;;
+	kgdboc=*)
+	    I=${I/#kgdboc=}
+	    CONS=(${I/,/ })
+	    ;;
+	*)
+	    ;;
+    esac
+done
+
+# put together the parameters
+#
+if [ ${#CONS[*]} -ge 1 ]; then
+    TTY=${CONS[0]}
+fi
+
+if [ ${#CONS[*]} -ge 2 ]; then
+    BAUD=${CONS[1]}
+fi
+
+echo $TTY $BAUD
+

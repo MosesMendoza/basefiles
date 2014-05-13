@@ -1,0 +1,602 @@
+#! /usr/bin/python
+#-------------------------------------------------------------------------------
+#
+# Copyright 2013, Cumulus Networks Inc.
+# All rights reserved
+#
+#-------------------------------------------------------------------------------
+#
+manpage = """
+SYNOPSYS
+	pwmd [ options ]
+
+DESCRIPTION
+
+	pwmd provides a closed loop thermal monitoring and fan control system.
+	Thermal readings and fan control point detection are done via the
+	lm-sensors framework; pwmd utilizes this to read the temperature values,
+	determine thermal limits and adjust fan speeds accordingly.
+
+	Each fan has one or more thermal sensors that are affected by it's
+	speed.  Fan speed is set by proportional control loop based on the
+	thermal monitor that is closest to the top of it's operating range.
+	pwmd allows for a many-to-many relationship between thermal monitors and
+	fan control such that each fan can be affected by one or more thermal
+	sensors and each thermal sensor may affect one or more fans.
+
+	pwmd utilizes a configuration file that normally resides in
+	/etc/pwmd.conf.  Each fan-control point is a separate section in the
+	configuration whose full name must match a section in the output of
+	\"sensors\".  Configuration of a fan control point simply consists of
+	the polling interval, the fan's minimum and maximum pwm settings, and a
+	list of thermal sensors directly affected by the fan's setting.  The
+	file contains a default section that applies to all fans/settings that
+	are not further specified.  An example configuration file is...
+
+	[DEFAULT]
+	interval = 10
+	minpwm = 50
+	maxpwm = 255
+	monitor = tmp75-12c-1-49-temp1, tmp75-12c-1-4a-temp1
+
+	[max6650-i2c-1-1f-pwm1]
+	interval = 5
+	
+	[max6650-i2c-1-1b-pwm1]
+	monitor = tmp75-12c-1-49-temp1
+
+	[max6650-i2c-1-48-pwm1]
+	minpwm = 80
+
+	[max6650-i2c-1-4b-pwm1]
+	minpwm = 80
+
+	For hardware devices that support setting the target fan RPM,
+        pwmd has a 'rpmmode' boolean parameter that can be set in the
+        [DEFAULT] section.  Instead of setting the PWM values pwmd
+        sets the desired RPM value.  When operating in this mode the
+        units of 'minpwm' and 'maxpwm' are in RPM.  An example
+        [DEFAULT] section follows:
+
+        [DEFAULT]
+        interval = 10
+
+        # This platform sets the target RPM instead of PWM.
+        rpmmode = 1
+
+        # For this platform minpwm/maxpwm are in units of RPM
+        minpwm = 3000
+        maxpwm = 23000
+
+OPTIONS
+
+	-f, --config [config_file]
+
+		Extract system information from config_file.
+                Default /etc/pwmd.conf
+
+	-g, --generate
+
+		Generate a template configuration file based on the sensors and
+		control points available lm-sensors.  If --generate is selected
+		all other command line options are ignored.
+
+	-c, --check
+
+		Check the config file against the platform and exit.
+
+FILES
+
+	/etc/pwmd.conf
+
+SEE ALSO
+
+	sensors
+
+AUTHOR
+
+	JR Rivers <jrrivers@cumulusnetworks.com>
+"""
+
+  
+#-------------------------------------------------------------------------------
+#
+# Imports
+#
+
+import syslog
+import exceptions
+import warnings
+import ConfigParser
+import re
+import os
+import sys
+import time
+import optparse
+import signal
+import subprocess
+import traceback
+
+#-------------------------------------------------------------------------------
+#
+# Classes
+#
+
+class PWMDRuntimeError(RuntimeError):
+    pass
+
+#-------------------------------------------------------------------------------
+#
+# Functions
+#
+
+#--------------------
+#
+# warning formats
+#
+def pwmdwarn(message, category, filename, lineno, line=None):
+    return '%s:%s : %s : %s\n' % (filename, lineno, category.__name__, message)
+
+#--------------------
+#
+# sets global variable "optcfg"
+#
+def get_cmdline_opts():
+    optcfg = optparse.OptionParser(usage="usage: pwmd [options]")
+    optcfg.add_option("-c", "--check", dest="check", action="store_true",
+                      help="check the config file against current system and exit",
+                      default = False)
+    optcfg.add_option("-g", "--generate", dest="generate", action="store_true",
+                      help="generate a template config file based on platform",
+                      default = False)
+    optcfg.add_option("-f", "--config", dest="config_file", action="store",
+                      help="get settings from CONFIG_FILE (default is /etc/pwmd.conf)",
+                      default = "/etc/pwmd.conf")
+    return optcfg.parse_args()
+
+
+#--------------------
+#
+# check to see if an instance is already running
+#
+def already_running(pidfile):
+    myname=os.path.basename(sys.argv[0])
+    try:
+        if not os.path.isfile(pidfile):
+            return False
+        oldpid = re.findall('\D*(\d+).*', (file(pidfile, 'r').readline()))[0]
+        if not os.path.exists('/proc/%s' % oldpid):
+            return False
+        if myname not in file('/proc/%s/cmdline' % oldpid, 'r').readline():
+            return False
+        sys.stderr.write("%s already running as process %s\n" % (myname, oldpid))
+        return True
+    except Exception as inst:
+        raise PWMDRuntimeError("unable to validate pidfile %s: %s" %
+                               (pidfile, str(inst)))
+
+
+#--------------------
+#
+# return sensor readings
+#
+def get_sensors():
+    retry = 0
+    while True:
+        try:
+            return try_get_sensors()
+        except PWMDRuntimeError, e:
+            if retry < 3:
+                syslog.syslog(syslog.LOG_INFO, "INFO: retry get_sensors()")
+            else:
+                raise e
+        retry += 1
+
+def try_get_sensors():
+    try: 
+        f = subprocess.Popen("sensors", stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+        txt = f.communicate()[0]
+    except:
+        raise PWMDRuntimeError("unable to run \"sensors\"")
+
+    if f.returncode != 0:
+        raise PWMDRuntimeError("issue running \"sensors\"...\n%s" % txt)
+
+    if len(txt) == 0:
+        raise PWMDRuntimeError("no output from \"sensors\"...\n")
+
+    return txt.splitlines()
+
+#--------------------
+#
+# extract temperature readings and limits from `sensors` output
+#
+def get_temp_readings(warn_missing=False):
+    temps = dict()
+    S = get_sensors()
+    devname = ""
+    tmp = dict()
+    temp_re = re.compile("^(temp\d+):\s+[-+]?(\d+\.\d) C")
+    high_re = re.compile("high\s+=\s+[+-]?(\d+.\d) C")
+    hyst_re = re.compile("hyst\s+=\s+[+-]?(\d+.\d) C")
+    for L in S:
+        # blank lines separate device readings
+        if len(L) < 2:
+            devname = ""
+            continue
+        # First line is the device name
+        if devname == "":
+            devname = L.strip()
+            continue
+        # Temperature readings
+        t = temp_re.match(L)
+        if t and len(devname) != 0:
+            name = devname + "-" + t.group(1)
+            tmp = dict()
+            tmp["input"] = t.group(2)
+            high = high_re.search(L)
+            if high:
+                tmp["high"] = high.group(1)
+            else:
+                if warn_missing:
+                    warnings.warn("%s missing high temp threshold" % name)
+                tmp["high"] = 80
+            hyst = hyst_re.search(L)
+            if hyst:
+                tmp["hyst"] = hyst.group(1)
+            else:
+                tmp["hyst"] = 40
+                if warn_missing:
+                    warnings.warn("%s missing high hyst threshold, using %f" %
+                                  (name, tmp["hyst"]))
+            temps[name] = tmp
+            tmp = dict()
+            continue
+    return temps
+
+
+#--------------------
+#
+# extract fan controllers from `sensors` output and verify control points
+#
+def get_pwms():
+    pwmtmp = dict()
+    #
+    # gather up all of the fans
+    #
+    S = get_sensors()
+    devname = ""
+    tmp = list()
+    fan_re = re.compile("^(fan\d+):\s+[-+]?(\d+) RPM")
+    for L in S:
+        # blank lines separate device readings
+        if len(L) < 2:
+            if devname != "" and len(tmp) != 0:
+                pwmtmp[devname] = tmp
+            devname = ""
+            tmp = list()
+            continue
+        # First line is the device name
+        if devname == "":
+            devname = L.strip()
+            continue
+        # Fan readings
+        f = fan_re.match(L)
+        if f:
+            tmp += [f.group(1)]
+            continue
+    #
+    # then reduce the set based on existing sysfs pwm* files
+    #
+    pwms = list()
+    for I in pwmtmp.keys():
+        atleastone = False
+        for J in pwmtmp[I]:
+            pwm = I + "-" + J.replace("fan", "pwm")
+            pwm_v  = get_sysfs_path(pwm)
+            pwm_en = get_sysfs_path(pwm) + "_enable"
+            if os.path.exists(pwm_v) and os.path.exists(pwm_en):
+                atleastone = True
+                pwms += [pwm]
+        if not atleastone:
+            raise PWMDRuntimeError("pwm does not exist for fan %s" % I)
+    return pwms
+
+
+#--------------------
+#
+# write out a template based on platform as seen by `sensors`
+#
+def generate_template_config(pwms, temps):
+    default = { "interval" : 10,
+                "minpwm" : 64,
+                "maxpwm" : 255 }
+    print "# Autogenerated by pwmd @", time.asctime()
+    print "#"
+    print
+    print "# Use these defaults with caution"
+    print
+    print "# default settings used unless overridden in fan specific sections below"
+    print "#"
+    print "# section name must be all caps"
+    print "#"
+    print "[DEFAULT]"
+    for I in ("interval", "minpwm", "maxpwm"):
+        print I, "=", default[I]
+    print "monitor =", "\n          ".join(temps.keys()), "\n"
+    print "# Fan specific configuration sections"
+    print "#"
+    for I in pwms:
+        print "[" + I + "]", "\n"
+    return
+
+
+#--------------------
+#
+# Extract device sysfs path from `sensor` name
+#
+def get_sysfs_path(name):
+    #
+    # undo the summaization
+    #
+    tmp = name.split("-")
+    path  = "/sys/bus/" + tmp[1] + "/devices/"
+    #
+    # different buses have different parsing
+    #
+    if tmp[1] == "i2c":
+        path += tmp[2] + "-00" + tmp[3] + "/" + tmp[4]
+    else:
+        warnings.warn("can not parse paths on %s buses" % tmp[1])
+        exit(1)
+    #
+    # check the result for sanity
+    #
+    return path
+
+
+#--------------------
+#
+# read the config file, check it for sanity, and prep for operation
+#
+def get_config(config_file, pwms, temps, ignoreError=False):
+    config = ConfigParser.ConfigParser()
+    #
+    # read the file
+    #
+    if not (os.path.exists(config_file) and os.access(config_file, os.R_OK)):
+        raise PWMDRuntimeError("unable to access config file %s" % config_file)
+    else:
+        sys.stderr.write("pwmd : using " + config_file + "\n")
+    config.read(config_file)
+    #
+    # see if there is a default section
+    #
+    if config.defaults() == {}:
+        sys.stderr.write("pwmd : Warning : config is missing a [DEFAULT] section\n")
+    #
+    # check that all specified fans exist and vice versa
+    #
+    # - unspecified fans pick up default values
+    #
+    real = set(pwms)
+    conf = set(config.sections())
+    if conf - real:
+        extra_sections = conf - real
+        for s in extra_sections:
+            print "checking section: " + s
+            if config.get( s, 'force_fan', 0, {'force_fan': 'false'}):
+                pwms.append(s)
+            else:
+                warnings.warn("config has sections for non-existent fans : %s" %
+                              ", ".join(conf-real))
+    if real - conf:
+        warnings.warn("using defaults for missing config section %s" %
+             ", ".join(real-conf))
+        for I in real - conf:
+            config.add_section(I)
+    #
+    # check that all specified thermal sensors exist and vice versa
+    #
+    # - remove non-existent sensors from running config
+    #
+    all_conf = set()
+    real = set(temps.keys())
+    for I in ["DEFAULT"] + config.sections():
+        if config.has_option(I, "monitor"):
+            conf = set(re.split("\s*,*\s*", config.get(I, "monitor")))
+            all_conf |= conf
+            if conf - real:
+                warnings.warn("ignoring non-existent thermal sensor %s in [%s]" %
+                     (", ".join(conf - real), I))
+                config.set(I, "monitor", " ".join(conf & real))
+    if real - all_conf:
+        warnings.warn("config does not utilize thermal sensor %s" %
+             " ".join(real -all_conf))
+    #
+    # final check that all required values exist (default or specific)
+    #
+    for I in pwms:
+        missing = list()
+        for J in "interval", "monitor", "minpwm", "maxpwm":
+            try:
+                config.get(I, J)
+            except:
+                missing += [J]
+        if len(missing) != 0:
+            mystr = "[%s] missing config for : %s" % (I, ", ".join(missing))
+            if ignoreError:
+                warnings.warn(mystr)
+            else:
+                raise PWMDRuntimeError(mystr)
+    #
+    # ready to roll
+    #
+    return config
+
+
+#--------------------
+#
+# Set a fan's speed
+#
+def set_speed(fan, value, rpmmode):
+
+    if rpmmode:
+        # Target RPM mode uses fanN_target to set the desired
+        # RPM speed.
+        fan = fan.replace("pwm", "fan") + "_target"
+
+    try:
+        F = open(get_sysfs_path(fan), "w")
+        F.write(str(value))
+        F.close()
+    except:
+        raise PWMDRuntimeError("can not write %s\n%s" % (get_sysfs_path(fan), str(sys.exc_info())))
+    return
+
+
+#--------------------
+#
+# calculate using a proportional loop
+#
+# - expects input, high, and hyst temps for each monitor
+# - caps at minpwm and maxpwm from config file
+#
+def calc_speed(fan, config, temps):
+    speed = -1
+    for T in config.get(fan, "monitor").split():
+        #
+        # easier to read
+        #
+        hyst = float(temps[T]["hyst"])
+        high = float(temps[T]["high"])
+        temp = float(temps[T]["input"])
+        minp = int(config.get(fan, "minpwm"))
+        maxp = int(config.get(fan, "maxpwm"))
+        #
+        # now the loop
+        #
+        if temp < hyst:
+            tmp = minp
+        elif temp > high:
+            tmp = maxp
+        else:
+            tmp = int(minp + (temp - hyst) * (maxp - minp) / (high - hyst))
+        if tmp > speed:
+            speed = tmp
+    return speed
+
+#--------------------
+#
+# enable fan pwm control and set to max speed
+#
+def init_pwms(pwms, config, rpmmode):
+    #
+    # check for existence and write permission
+    #
+
+    err = list()
+    for I in pwms:
+        try:
+            pwm_enable = get_sysfs_path(I) + "_enable"
+            # not all pwm have enables
+            if os.path.exists(pwm_enable):
+                F = open(pwm_enable, "w")
+                F.write("1")
+                F.close()
+            set_speed(I, config.get(I, "maxpwm"), rpmmode)
+        except:
+            raise RuntimeError("can not write %s" % (get_sysfs_path(I)))
+    return
+
+
+#--------------------
+#
+# normal exit
+#
+def exit_normally(signum=0, frame=None):
+    syslog.syslog(syslog.LOG_INFO, "exiting normally")
+    sys.stderr.write("%s : exiting normally\n" % sys.argv[0])
+    exit(0)
+
+
+#-------------------------------------------------------------------------------
+#
+# Main
+#
+def main():
+    (opts, extra) = get_cmdline_opts()
+    if extra:
+        raise RuntimeError("command line cruft : %s" % ", ".join(extra))
+
+    pidfile = "/var/run/pwmd.pid"
+    if already_running(pidfile):
+        sys.exit()
+    else:
+        file(pidfile, 'w').write(str(os.getpid()))
+
+    #
+    # check out the system, read and check the config file
+    #
+    with warnings.catch_warnings(record=True) as W:
+        pwms = get_pwms()
+        temps = get_temp_readings(True)
+        if opts.generate:
+            generate_template_config(pwms, temps)
+            return 0
+        config = get_config(opts.config_file, pwms, temps, opts.check)
+    for I in W:
+        warnings.showwarning(I.message, I.category, I.filename, I.lineno)
+    if opts.check:
+        return 0
+    else:
+        syslog.syslog(syslog.LOG_INFO, "using config file %s" % opts.config_file)
+        if len(W) != 0:
+            syslog.syslog(syslog.LOG_WARNING,
+                          "warnings during config parsing, run --check")
+    #
+    # Now the real stuff
+    #
+
+    rpmmode = False
+    if config.has_option("DEFAULT", "rpmmode"):
+        rpmmode = config.getboolean("DEFAULT", "rpmmode")
+
+    init_pwms(pwms, config, rpmmode)
+    while True:
+        temps = get_temp_readings()
+        min_interval = 30
+        for I in pwms:
+            speed = calc_speed(I, config, temps)
+            set_speed(I, speed, rpmmode)
+            interval = int(config.get(I, "interval"))
+            if interval < min_interval:
+                min_interval = interval
+        time.sleep(min_interval)
+    return 0
+
+
+#--------------------
+#
+# execution check
+#
+if __name__ == "__main__":
+    try:
+        signal.signal(signal.SIGTERM, exit_normally)
+        warnings.simplefilter("always")
+        warnings.formatwarning = pwmdwarn
+        syslog.openlog(": %s : " % sys.argv[0])
+        exit(main())
+    except PWMDRuntimeError, errstr:
+        syslog.syslog(syslog.LOG_ERR, "ERROR : %s" % str(errstr))
+        sys.stderr.write("%s : ERROR : %s\n" % (sys.argv[0], str(errstr)))
+        exit(1)
+    except KeyboardInterrupt:
+        exit_normally()
+    except Exception:
+        (exc_type, exc_value, exc_traceback) = sys.exc_info()
+        err = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        log = 'Unhandled Exception : %s' % err
+        syslog.syslog(syslog.LOG_ERR, log)
+        sys.stderr.write(log)

@@ -1,0 +1,211 @@
+#! /usr/bin/python
+#-------------------------------------------------------------------------------
+#
+# Copyright 2013, Cumulus Networks Inc  all rights reserved
+#
+#-------------------------------------------------------------------------------
+#
+
+#-------------------------------------------------------------------------------
+#
+# Imports
+#
+
+import syslog
+import warnings
+import re
+import os
+import sys
+import time
+import signal
+import subprocess
+import traceback
+import argparse
+
+import cumulus.sysledcontrol
+
+#-------------------------------------------------------------------------------
+#
+# Classes
+#
+class ArgParseError(RuntimeError):
+    pass
+
+class SMONDRuntimeError(RuntimeError):
+    pass
+
+#-------------------------------------------------------------------------------
+#
+# Functions
+#
+
+#--------------------
+#
+# warning formats
+#
+def smondwarn(message, category, filename, lineno, line=None):
+    return '%s:%s : %s : %s\n' % (filename, lineno, category.__name__, message)
+
+#--------------------
+#
+# check to see if an instance is already running
+#
+def already_running(pidfile):
+    myname=os.path.basename(sys.argv[0])
+    try:
+        if not os.path.isfile(pidfile):
+            return False
+        oldpid = re.findall('\D*(\d+).*', (file(pidfile, 'r').readline()))[0]
+        if not os.path.exists('/proc/%s' % oldpid):
+            return False
+        if myname not in file('/proc/%s/cmdline' % oldpid, 'r').readline():
+            return False
+        sys.stderr.write("%s already running as process %s\n" % (myname, oldpid))
+        return True
+    except Exception as inst:
+        raise SMONDRuntimeError("unable to validate pidfile %s: %s" %
+                                (pidfile, str(inst)))
+
+#--------------------
+#
+# normal exit
+#
+def exit_normally(signum=0, frame=None):
+    syslog.syslog(syslog.LOG_INFO, "exiting normally")
+    sys.stderr.write("%s : exiting normally\n" % sys.argv[0])
+    exit(0)
+
+#--------------------
+#
+# Change LED States
+#
+def change_led_state():
+    retry = 0
+    while True:
+        try:
+            return try_change_led_state()
+        except SMONDRuntimeError, e:
+            if retry < 3:
+                syslog.syslog(syslog.LOG_INFO, "INFO: retry sysled-mgmt()")
+            else:
+                raise e
+        retry += 1
+
+def try_change_led_state():
+    try:
+        f = subprocess.Popen(['/usr/lib/cumulus/sysled-mgmt', '--update'], stdout=subprocess.PIPE,
+            shell=False, stderr=subprocess.STDOUT)
+        txt = f.communicate()[0]
+    except SMONDRuntimeError, e:
+        print e, e.errno
+        raise SMONDRuntimeError("unable to run \"sysled-mgmt\"")
+
+    if f.returncode != 0:
+        raise SMONDRuntimeError("issue running \"sysled-mgmt\"...\n%s" % txt)
+
+    if len(txt) == 0:
+        raise SMONDRuntimeError("no output from \"sysled-mgmt\"...\n")
+
+    return txt
+
+#-------------------------------------------------------------------------------
+#
+# Main
+#
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--verbose',
+        required=False,
+        action='store_true',
+        help='Verbose output')
+    parser.add_argument("-f", "--config", dest="config_file", action="store",
+        help="get settings from CONFIG_FILE (default is /etc/cumulus/sysledcontrol.conf)",
+        default = "/etc/cumulus/sysledcontrol.conf")
+    try:
+        args = parser.parse_args()
+    except ArgParseError, e:
+        parser.error(str(e))
+        sys.exit(-1)
+
+    pidfile = "/var/run/smond.pid"
+    if already_running(pidfile):
+        sys.exit()
+    else:
+        file(pidfile, 'w').write(str(os.getpid()))
+
+
+    #
+    # Now the real stuff
+    #
+
+    platform = os.popen('platform-detect -m').read().strip()
+    revision = os.popen('platform-detect -r').read().strip()
+
+
+    if args.verbose:
+        sys.stdout.write('Managing System LEDs ports for %s revision %s\n'
+                        % (platform, revision))
+
+    min_led_update_interval = 5
+
+    systemunits = cumulus.sysledcontrol.SystemLEDControl(platform, revision,
+            verbose=args.verbose, interval=min_led_update_interval)
+
+    with warnings.catch_warnings(record=True) as W:
+        syslog.syslog(syslog.LOG_INFO, "using config file %s"
+                % args.config_file)
+        systemunits.read_config(args.config_file)
+    for I in W:
+        warnings.showwarning(I.message, I.category, I.filename, I.lineno)
+
+    if len(W) != 0:
+         syslog.syslog(syslog.LOG_WARNING,
+                          "warnings during config parsing, verify config file")
+
+    if systemunits.interval < min_led_update_interval:
+        syslog.syslog(syslog.LOG_ERR,
+            "Configured LED update interval %d for smond is less than min interval %d seconds"
+            % (systemunits.interval, min_led_update_interval))
+        sys.exit()
+
+    systemunits.init_operational_state()
+
+    while True:
+        change_led, sunits = systemunits.update_state()
+        if change_led:
+            '''
+                Update Syslog and Invoke sysled-mgmt
+            '''
+            for sunit in sunits:
+                syslog.syslog(syslog.LOG_WARNING,
+                    "Health of %s unit changed to %s" %(sunit.label, sunit.new_status))
+            change_led_state()
+
+        time.sleep(systemunits.interval)
+    return 0
+
+
+#--------------------
+#
+# execution check
+#
+if __name__ == "__main__":
+    try:
+        signal.signal(signal.SIGTERM, exit_normally)
+        # Cause all warnings to always be triggered.
+        warnings.simplefilter("always")
+        warnings.formatwarning = smondwarn
+        syslog.openlog(": %s : " % sys.argv[0])
+        exit(main())
+    except SMONDRuntimeError, errstr:
+        syslog.syslog(syslog.LOG_ERR, "ERROR : %s" % str(errstr))
+        sys.stderr.write("%s : ERROR : %s\n" % (sys.argv[0], str(errstr)))
+        exit(1)
+    except KeyboardInterrupt:
+        exit_normally()
+    except Exception:
+        (exc_type, exc_value, exc_traceback) = sys.exc_info()
+        err = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        log = 'Unhandled Exception : %s' % err
+        syslog.syslog(syslog.LOG_ERR, log)
+        sys.stderr.write(log)

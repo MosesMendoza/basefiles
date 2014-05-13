@@ -1,0 +1,5 @@
+
+
+PLATFORM_BASEDIR=/usr/share/platform-config
+PLATFORM_DIR=$PLATFORM_BASEDIR/$(/usr/bin/platform-detect | sed 's/,/\//')
+

@@ -1,0 +1,25 @@
+# This file describes the network interfaces available on your system
+# and how to activate them. For more information, see interfaces(5).
+#
+# IMPORTANT!!!!!!!
+#
+# Interface definitions are processed in an order dependent fashion as follows:
+#
+# - Loopbacks, ports, and bonds such as lo, swp12, bond0
+#   - note that ports that are part of a bond do not have other configuration
+# - Port and bond sub-interfaces (vlans), such as swp1.900 or bond0.100
+# - Bridges, like br0 and br2.
+#
+# When defining more than 10 bridges using VLAN sub-interfaces, the
+# subinterfaces should be declared in conjunction with their associated bridge.
+#
+
+# The loopback network interface
+auto lo
+iface lo inet loopback
+
+# The primary network interface
+#auto eth0
+iface eth0 inet dhcp
+
+

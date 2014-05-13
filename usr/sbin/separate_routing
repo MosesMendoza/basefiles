@@ -1,0 +1,24 @@
+#!/bin/bash
+
+if [ -z "$1" ]; then
+    echo "Usage: $0 <routing_table>" >&2
+    echo "       use -1 to go back to unified routing tables." >&2
+    exit 1
+fi
+
+TABLE="$1"
+BASE_PRIO=100
+
+for i in `ip -o link show | awk '{ print $2 }' | cut -d':' -f1 | grep ^swp | cut -c4-`; do
+    P1="$((BASE_PRIO + i * 2))"
+    P2="$((BASE_PRIO + (i * 2) + 1))"
+    if [ "$TABLE" == "-1" ]; then
+        ip rule del prio $P1
+        ip rule del prio $P2
+    else
+        ip rule add prio $P1 iif swp$i table $TABLE
+        ip rule add prio $P2 oif swp$i table $TABLE
+    fi
+done
+
+ip route flush cache

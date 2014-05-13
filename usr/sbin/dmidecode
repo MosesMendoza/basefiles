@@ -1,0 +1,77 @@
+#!/bin/bash
+#-------------------------------------------------------------------------------
+#
+# Copyright 2013, Cumulus Networks Inc.  all rights reserved
+#
+#-------------------------------------------------------------------------------
+
+# puppet's facter 1.7
+# https://github.com/puppetlabs/facter/blob/master/lib/facter/manufacturer.rb
+
+# chef's ohai 6.16
+# https://github.com/opscode/ohai/blob/master/lib/ohai/plugins/dmi.rb
+
+# cfengine - soft class using hardware::info
+# https://github.com/cfengine/design-center/tree/master/sketches/libraries/hardware_info
+
+while true; do
+  case "$1" in
+    -s | --string ) STRING="$2"; shift 2 ;;
+    -- ) shift; break ;;
+    * ) break ;;
+  esac
+done
+
+BOOT_UTIL="/usr/sbin/fw_printenv"
+SYSTEM_UTIL="/usr/cumulus/bin/decode-syseeprom"
+
+if [ ! -x $BOOT_UTIL ]; then
+  echo "No $BOOT_UTIL found, exiting `basename $0`"
+  exit 255
+fi
+
+if [ ! -x $SYSTEM_UTIL ]; then
+  echo "No $SYSTEM_UTIL found, exiting `basename $0`"
+  exit 255
+fi
+
+BIOS=$($BOOT_UTIL ver)
+BIOS_VERSION=$(echo $BIOS | sed -e 's/^ver=//' -e 's/ (.*$//')
+BIOS_RELEASE=$(echo $BIOS | sed -e 's/^.*(//' -e 's/).*$//') 
+
+SYSTEM=$(cat /proc/device-tree/model)
+SYSTEM_MANUF=$(echo $SYSTEM | cut -d "," -f 1) 
+SYSTEM_MODEL=$(echo $SYSTEM | cut -d "," -f 2)
+SYSTEM_SERIAL=$($SYSTEM_UTIL -t board | awk '/^serial_number/ { print $3 }')
+
+if [ "$STRING" == "system-manufacturer" ]; then
+  echo "$SYSTEM_MANUF"
+  exit 0
+elif [ "$STRING" == "system-product-name" ]; then
+  echo "$SYSTEM"
+  exit 0
+elif [ -n "$STRING" ]; then
+  echo "Invalid string keyword: $STRING"
+  exit 2
+fi
+
+cat << EOF
+# dmidecode 1.0-cumulus : emulation layer for facter, ohai and cfengine
+
+Handle 0x0000, DMI type 0, 24 bytes
+BIOS Information
+	Vendor: U-Boot
+	Version: $BIOS_VERSION
+	Release Date: $BIOS_RELEASE
+	Characteristics:
+		PCI is supported
+		BIOS is upgradeable
+
+Handle 0x0001, DMI type 1, 27 bytes
+System Information
+	Manufacturer: $SYSTEM_MANUF
+	Product Name: $SYSTEM_MODEL
+	Serial Number: $SYSTEM_SERIAL
+
+End Of Table
+EOF

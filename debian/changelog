@@ -1,0 +1,11 @@
+cl-basefiles (1.5-cl2) CumulusLinux-2.0; urgency=low
+
+  * Re-version for release
+
+ -- Cumulus Builds <build@monster-04.cumulusnetworks.com>  Fri, 07 Feb 2014 13:00:54 -0800
+
+cl-basefiles (1.5-1) unstable; urgency=low
+
+  * Initial release
+
+ -- Michael Fine <mfine@monster-03.cumulusnetworks.com>  Thu, 10 Oct 2013 14:03:29 -0700

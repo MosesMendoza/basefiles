@@ -1,0 +1,38 @@
+#!/usr/bin/python
+# Copyright 2012 Cumulus Networks, Inc.
+#
+# rtcinit
+#
+# Initialize the hardware RTC with the current system time.  This command takes
+# no options.
+#
+# RTC chips that contain bogus values can't always be initialized using the
+# hwclock command.  This command forces the current time into the RTC.
+# Typically this is only required once.
+#
+# XXX - consider adding a command line option that would make it so we only
+#       update the rtc when this condition exists either:
+#         a) becuse the rtc can't be read
+#         b) because the rtc is in a list of rtcs known to have this behavior
+#       This would be useful if we wanted to unconditionally call rtcinit from
+#       an init script.
+import fcntl
+import time
+import struct
+
+now = time.gmtime()
+nowTM = struct.pack('i' * 9,
+                    now.tm_sec,
+                    now.tm_min,
+                    now.tm_hour,
+                    now.tm_mday,
+                    now.tm_mon,
+                    now.tm_year,
+                    now.tm_wday,
+                    now.tm_yday,
+                    now.tm_isdst)
+
+rtc = open('/dev/rtc', 'r')
+
+RTC_SET_TIME = struct.unpack('i', struct.pack('I', 0x8024700a))[0]
+fcntl.ioctl(rtc, RTC_SET_TIME, nowTM)

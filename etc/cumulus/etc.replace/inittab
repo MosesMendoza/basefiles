@@ -1,0 +1,50 @@
+# /etc/inittab: init(8) configuration.
+# $Id: inittab,v 1.91 2002/01/25 13:35:21 miquels Exp $
+
+# The default runlevel.
+id:3:initdefault:
+
+# Boot-time system configuration/initialization script.
+# This is run first except when booting in emergency (-b) mode.
+si::sysinit:/etc/init.d/rcS
+
+# What to do in single-user mode.
+~~:S:wait:/sbin/sulogin
+
+# /etc/init.d executes the S and K scripts upon change
+# of runlevel.
+#
+# Runlevel 0 is halt.
+# Runlevel 3 is multi-user with networking
+# Runlevel 6 is reboot.
+
+l0:0:wait:/etc/init.d/rc 0
+l3:3:wait:/etc/init.d/rc 3
+l6:6:wait:/etc/init.d/rc 6
+# Normally not reached, but fallthrough in case of emergency.
+# z6:6:respawn:/sbin/sulogin
+
+# What to do when the power fails/returns.
+pf::powerwait:/etc/init.d/powerfail start
+pn::powerfailnow:/etc/init.d/powerfail now
+po::powerokwait:/etc/init.d/powerfail stop
+
+# /sbin/getty invocations for the runlevels.
+#
+# The "id" field MUST be the same as the last
+# characters of the device (after "tty").
+#
+# Format:
+#  <id>:<runlevels>:<action>:<process>
+#
+# Note that on most Debian systems tty7 is used by the X Window System,
+# so if you want to add more getty's go ahead but skip tty7 if you run X.
+#
+# 1:3:respawn:/sbin/getty 38400 tty1
+# 2:3:respawn:/sbin/getty 38400 tty2
+# 3:3:respawn:/sbin/getty 38400 tty3
+# 4:3:respawn:/sbin/getty 38400 tty4
+# 5:3:respawn:/sbin/getty 38400 tty5
+# 6:3:respawn:/sbin/getty 38400 tty6
+S0:3:respawn:/sbin/getty -L $(get-cmdline-console) vt100
+
