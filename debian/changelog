@@ -1,3 +1,9 @@
+cl-basefiles (1.5-cl3) CumulusLinux-2.0; urgency=low
+
+  * Test for open-ssh before rebuilding
+
+ -- Moses Mendoza <moses@puppetlabs.com>  Tue, 13 May 2014 08:00:54 -0800
+
 cl-basefiles (1.5-cl2) CumulusLinux-2.0; urgency=low
 
   * Re-version for release

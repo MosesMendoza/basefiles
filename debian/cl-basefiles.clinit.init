@@ -13,8 +13,13 @@
 do_start()
 {
         ### Generate host local ssh-host keys if don't exist
-        if [ ! -f /etc/ssh/ssh_host_dsa_key ] && [ ! -f /etc/ssh/ssh_host_rsa_key ] && [ ! -f /etc/ssh/ssh_host_ecdsa_key ];
-                then dpkg-reconfigure --frontend noninteractive openssh-server;
+        if [ ! -f /etc/ssh/ssh_host_dsa_key ] && [ ! -f /etc/ssh/ssh_host_rsa_key ] && [ ! -f /etc/ssh/ssh_host_ecdsa_key ]; then
+
+                if dpkg -l openssh-server >/dev/null 2>&1 ; then
+			dpkg-reconfigure --frontend noninteractive openssh-server
+		else
+			return 0
+		fi
         fi
         return $?
         ####################################################
